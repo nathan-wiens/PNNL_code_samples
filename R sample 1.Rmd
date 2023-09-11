@@ -1,0 +1,664 @@
+---
+title: "Project 2"
+author: "Nathan Wiens"
+date: "December 8, 2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+require("knitr")
+datadir <- "C:/Users/wiens/Desktop/Fourth Year/linear_models/sys4021_code/inClassData/AirQualityUCI"
+sourcedir <- "C:/Users/wiens/Desktop/Fourth Year/linear_models/sys4021_code/inClassCode"
+
+opts_knit$set(root.dir = sourcedir)
+library(forecast)
+library(mtsdi)
+library(MTS)
+library(ggplot2)
+library(ggpubr)
+library(ggfortify)
+```
+
+## Load data and impute missing values
+```{r, include=FALSE}
+setwd(datadir)
+airquality = read.csv('AirQualityUCI.csv')
+
+# replace -200 with NA
+airquality[airquality == -200] <- NA
+
+# convert integer type to numeric
+intcols = c(4,5,7,8,9,10,11,12)
+for(i in 1:length(intcols)){
+  airquality[,intcols[i]] <- as.numeric(airquality[,intcols[i]])
+}
+
+setwd(sourcedir)
+
+# create new data frame with just CO and NO2
+AQdata = airquality[,c(3,10)]
+
+# impute missing air quality data
+f <- ~ CO.GT. + NO2.GT.
+t <- c(seq(1,dim(AQdata)[1],1))
+i <- mnimput(f, AQdata, eps=1e-3, ts=TRUE, method='gam', ga.control=list(formula=paste(names(AQdata)[c(1:2)],'~ns(t,2)')))
+
+# set airquality to imputed data
+AQdata <- i$filled.dataset
+
+# aggregate to daily maxima for model building
+dailyAQ <- aggregate(AQdata, by=list(as.Date(airquality[,1],"%m/%d/%Y")), FUN=max)
+```
+
+## Part 1
+### 1A, 1B
+```{r}
+
+co.ts <- ts(dailyAQ$CO.GT.[1:(nrow(dailyAQ)-7)])
+co_plot <- autoplot(co.ts, main = "CO")
+
+no2.ts <- ts(dailyAQ$NO2.GT.[1:(nrow(dailyAQ)-7)])
+no2_plot<-autoplot(no2.ts, main = 'NO2')
+
+ggarrange(co_plot, no2_plot, nrow = 2, ncol = 1)
+```
+Looking at a time series of each gas, there appears to be short cycles in both
+gasses which cause large differences in time spans less than a month. There also
+appears to be an increasing trend in NO2 after around day 220. Carbon monoxide 
+seems to be relatively stationary.
+
+### 1A - Periodograms for Seasonality
+```{r}
+
+co.pg <- spec.pgram(co.ts,spans=9,demean=T,log='no')
+no2.pg <- spec.pgram(no2.ts,spans=9,demean=T,log='no')
+
+max.omega.co<-co.pg$freq[which(co.pg$spec==max(co.pg$spec))]
+max.omega.no2<-no2.pg$freq[which(no2.pg$spec==max(no2.pg$spec))]
+
+1/max.omega.co
+1/max.omega.no2
+
+```
+
+Looking at the periodograms from CO and NO2, both have a peak of low frequencies 
+which is called 'red noise' and is often associated with high autocorrelation. 
+CO peaks at a period of 400 days and NO2 at 200 days.
+
+
+```{r include=FALSE}
+sorted.co <- sort(co.pg$spec, decreasing=T, index.return=T)
+names(sorted.co)
+
+# corresponding periods (omegas = frequences, Ts = periods)
+sorted.omegas.co <- co.pg$freq[sorted.co$ix]
+sorted.Ts.co <- 1/co.pg$freq[sorted.co$ix]
+
+sorted.Ts.co
+sorted.omegas.co
+
+#no2
+sorted.no2 <- sort(no2.pg$spec, decreasing=T, index.return=T)
+names(sorted.no2)
+
+# corresponding periods (omegas = frequences, Ts = periods)
+sorted.omegas.no2 <- no2.pg$freq[sorted.no2$ix]
+sorted.Ts.no2 <- 1/no2.pg$freq[sorted.no2$ix]
+
+sorted.Ts.no2
+sorted.omegas.no2
+```
+The next biggest peaks in the periodogram shows a possible weekly cycle
+in the CO time series and an even weaker weekly cycle in NO2.
+
+```{r, echo = FALSE, fig.show = 'hide'}
+
+seasonplot(co.ts, s = 7)
+seasonplot(co.ts, s = 30)
+
+seasonplot(no2.ts, s = 7)
+seasonplot(no2.ts, s = 30)
+
+```
+
+
+```{r}
+
+co.acf <- ggAcf(co.ts)
+no2.acf <- ggAcf(no2.ts)
+
+
+co.pacf <- ggPacf(co.ts)
+no2.pacf <- ggPacf(no2.ts)
+
+ggarrange(co.acf, no2.acf, co.pacf, no2.pacf, nrow = 2, ncol = 2)
+
+```
+Looking at the ACF for CO, there appears to be a sinusoidal pattern.
+The significant peaks in the graph are around a weekly season. The ACF for NO2
+also shows a slight sinusoidal pattern with a period of around a week but there is also a 
+decreasing trend in the graph. There is a longer significant lag in the NO2.
+Both of the PACFs have significant terms for about 2 weeks
+
+### 1B - CO Modeling trends
+```{r}
+
+dailyAQ$day <- weekdays(dailyAQ$Group.1) #creates day variable
+
+time <- c(1:length(co.ts)) # creates time variable
+
+co.time <- lm(co.ts ~time) # models CO by time
+summary(co.time) # time is a significant predictor at the 0.01 level
+autoplot(co.time)
+
+co.trendseason <- lm(co.ts ~ time + dailyAQ$day[time])
+autoplot(co.trendseason)
+summary(co.trendseason)
+
+
+```
+Note that co.time diagnostics are the first set of graphs and co.trendseason are the second
+
+The model with only time determined that time was significant at the 0.01 level
+with a small positive trend. The QQ shows that the residuals deviates slightly
+from the normal line on the tails (more so on the lower tail) but, otherwise,
+the model diagnostics do not show anything of concern. 
+
+The model with time and days of the week detected a significant positive trend 
+with time, indicated by the coefficient value of 0.0027505 on the time variable.
+Monday, Wednesday, Thursday, and the base case (Friday) were all significant. 
+This would lead us to believe that may be a significant weekday/weekend 
+seasonality, however, Tuesday is not significant. Model diagnostics show a 
+skewed upper tail in the QQ plot but otherwise residuals look as expected. 
+
+For both models the residual vs fitted graph showed a slight pattern but we 
+decided that the co.trendseason residual vs fitted graph was adequate.
+
+
+```{r}
+trend.seasonal.resid <- ts(co.trendseason$residuals)
+autoplot(trend.seasonal.resid, ylab = "Residuals from Trend Model")
+
+```
+After looking at a time series of the residuals, there appears to be a seasonal
+cycle with a period of around 200 days so we decided to add a predictor to 
+capture this pattern.
+
+```{r}
+co.model.data = data.frame(time.mod = 1:391, co.ts.mod = dailyAQ$CO.GT., day.mod=dailyAQ$day )
+
+#co.trendseason3 <-lm(co.ts~time+dailyAQ$day[time]+sin(2*pi*time/200) + cos(2*pi*time/200))
+co.trendseason3 <-lm(co.ts.mod~time.mod+day.mod+sin(2*pi*time.mod/200) + 
+                       cos(2*pi*time.mod/200), data = co.model.data[1:384,])
+
+summary(co.trendseason3)
+autoplot(ts(co.trendseason3$residuals),ylab = "Residuals from Trend3 Model")
+
+```
+
+After adding this seasonal component, the residuals become more stationary.
+
+```{r}
+trend.seasonal.resid <- ts(co.trendseason3$residuals)
+
+co.acf <- ggAcf(trend.seasonal.resid)
+co.pacf <- ggPacf(trend.seasonal.resid)
+#ggarrange(co.acf,co.pacf,nrow=2,ncol=1)
+
+co.diff.acf <- ggAcf(diff(trend.seasonal.resid))
+co.diff.pacf <- ggPacf(diff(trend.seasonal.resid))
+ggarrange(co.acf,co.diff.acf, co.pacf,co.diff.pacf,nrow=2,ncol=2)
+```
+On the left, the PACF cuts off at lag 1 and the ACF shows exponential decay. 
+The lack of significant lags after 1 in the PACF combined with the exponential 
+decay of the ACF indicates that an AR(1) model may be appropriate. Since the PACF
+is sinusoidal after it cuts off, we will also try and ARMA(1,3)
+
+On the right, we don't see any structure in the differences of the residuals such that 
+additional differencing would be needed. 
+
+### 1D, 1E - CO
+```{r}
+co.ar1.model <- arima(trend.seasonal.resid, order=c(1,0,0), include.mean=FALSE)
+summary(co.ar1.model) #AIC 1367.8
+
+co.ar1ma3.model <- arima(trend.seasonal.resid, order=c(1,0,3), include.mean=FALSE)
+summary(co.ar1ma3.model) #AIC 1367.73
+
+co.auto.model <- auto.arima(trend.seasonal.resid, approximation = FALSE)
+summary(co.auto.model) #AIC 1365.63
+```
+We chose to investigate an AR1 model because we were not confident in the 
+significance of the second lag. The auto ARIMA and ARIMA(1,0,3) were also investigated. 
+We determined that an ARIMA(2,0,0) model is the best fit for a univariate model for 
+this data. We tried adding a moving average term to make an ARIMA(1,0,3) model 
+to compare performance and determined based on AIC that the ARIMA(2,0,0) model 
+was more performant and parsimonious. 
+
+```{r, warning=FALSE, }
+ggtsdiag(co.ar1.model, gof.lag = 25)
+ggtsdiag(co.ar1ma3.model, gof.lag = 25)
+ggtsdiag(co.auto.model, gof.lag = 25)
+qplot(sample=co.ar1.model$residuals) + stat_qq_line(color="red") + ggtitle("AR1")
+qplot(sample=co.ar1ma3.model$residuals) + stat_qq_line(color="red") + ggtitle("AR1MA3")
+qplot(sample=co.auto.model$residuals) + stat_qq_line(color="red") + ggtitle("AR2")
+
+```
+The residuals for all models appear to be stationary with insignificant lags at 
+all values greater than 1 in the ACF. The p-values of the Ljung-Box statistic 
+suggest that the AR(1) model is adequate up to a lag of 12 while the ARIMA(1,0,3) and
+the ARIMA(2,0,0) are adequate to at least 25. The QQ plots for both models show generally 
+normal data with a skewed upper tail. These plots appear acceptable for modeling use. 
+
+```{r}
+co.fitted <- co.trendseason3$fitted.values + fitted(co.auto.model)
+
+ggplot() + geom_line(aes(x=time,y=co.ts[1:length(time)],color="True")) +
+  geom_line(aes(x=time,y=co.fitted,color="Fitted")) + xlab("Time") + 
+  ylab("CO")
+```
+Comparing the fitted and true data values shows that the model generally captures 
+the movement of the data, even if the fitted values are not completely effective 
+in capturing the full amplitude of the variations. It appears the model 
+effectively captures seasonality within the data. We are generally satisfied 
+with this model's performance. 
+
+### 1B, 1C - NO2
+```{r}
+time.no2 <- c(1:length(no2.ts))
+no2.period <- 27#max.omega.no2
+
+no2.trendseason <- lm(no2.ts ~ time.no2 + dailyAQ$day[time] + sin(2*pi*time.no2/no2.period) +  
+                        cos(2*pi*time.no2/no2.period))
+autoplot(no2.trendseason)
+summary(no2.trendseason) #looking at the summary the weekends are significant 
+
+weekend <- dailyAQ%>%
+  mutate(weekend = ifelse(day == 'Saturday' | day == 'Sunday',1,0))%>%
+  dplyr::select(weekend)
+autoplot(ts(no2.trendseason$residuals))
+
+no2.model.data <- data.frame(time.mod = 1:391, no2.ts.mod = dailyAQ$NO2.GT., 
+                             weekend.mod=weekend[1:391,])
+
+no2.trendseason <- lm(no2.ts.mod ~ time.mod + weekend.mod+ sin(2*pi*time.mod/no2.period) +  
+                        cos(2*pi*time.mod/no2.period), data = no2.model.data[1:384,])
+
+
+
+autoplot(no2.trendseason)
+summary(no2.trendseason)
+
+```
+The diagnostic plots show the model generally meets necessary assumptions despite a small skewed tail shown in the QQ plot and some minor clusters in the Residuals vs Fitted and the Scale-Location plots. Later evaluation of the fitted vs true values will indicate the success of this choice. 
+
+```{r}
+trend.seasonal.resid.no2 <- ts(no2.trendseason$residuals)
+autoplot(trend.seasonal.resid.no2, ylab = "Residuals from Trend Model")
+
+no2.acf <- ggAcf(trend.seasonal.resid.no2)
+no2.pacf <- ggPacf(trend.seasonal.resid.no2)
+#ggarrange(no2.acf,no2.pacf,nrow=2,ncol=1)
+```
+
+```{r}
+no2.diff.acf <- ggAcf(diff(trend.seasonal.resid.no2))
+no2.diff.pacf <- ggPacf(diff(trend.seasonal.resid.no2))
+ggarrange(no2.acf, no2.diff.acf,no2.pacf,no2.diff.pacf,nrow=2,ncol=2)
+```
+On the left, the PACF shows exponential decay and the ACF shows linear sinusoidal decay. The lack of significant lags after 2 in the PACF combined with the sinusoidal decay of the ACF indicates that an AR(2) model may be appropriate. Our second model will be an ARMA(2,21) model since there is a mild sinusoidal decay in the ACF and and exponential decay in the PACF with the ACF cutting off after 21 and the PACF cutting off after 2. Due to the semi linear decay of the ACF and inspection of the difference plots, we will also create a model with a difference term.
+
+
+### 1C, 1D, 1E - NO2
+```{r, results = 'hide'}
+no2.ar2.model <- arima(trend.seasonal.resid.no2, order=c(2,0,0), include.mean=FALSE)
+summary(no2.ar2.model) #AIC 3719.82
+
+no2.ar2d1.model <- arima(trend.seasonal.resid.no2, order=c(2,1,0), include.mean=FALSE)
+summary(no2.ar2d1.model) #AIC 3739.66
+
+no2.ar2ma21.model <- arima(trend.seasonal.resid.no2, order=c(2,0,21), include.mean=FALSE)
+summary(no2.ar2ma21.model) #AIC 3728.35
+
+no2.auto.model <- auto.arima(trend.seasonal.resid.no2)
+summary(no2.auto.model) #AIC 3710.39
+```
+Comparing models, the model generated by the auto.arima function has the lowest AIC. This model is an ARIMA(1,1,1) model. It contains a differencing term that was identified in the previous plots.
+
+```{r}
+ggtsdiag(no2.ar2.model, gof.lag = 25)
+ggtsdiag(no2.ar2d1.model, gof.lag = 25)
+ggtsdiag(no2.ar2ma21.model, gof.lag = 25)
+ggtsdiag(no2.auto.model, gof.lag = 25)
+qplot(sample=no2.auto.model$residuals) + stat_qq_line(color="red") + ggtitle("AR7")
+
+```
+The residuals for all models appear to be stationary with insignificant lags at all values greater than 1 in the ACF. The p-values of the Ljung-Box statistic suggest that all but the AR(2) model with one differencing term are significant for at least up to 25 lags. Using this information we select at ARIMA(1,1,1) model going forward since this had the lowest AIC and equivalent good diagnostics to the other models.
+The QQ plots shows generally normal data with a skewed upper tail. This plot appears acceptable for modeling use. 
+
+```{r}
+no2.fitted <- no2.trendseason$fitted.values + fitted(no2.auto.model)
+
+ggplot() + geom_line(aes(x=time.no2,y=no2.ts[1:length(time.no2)],color="True")) +
+  geom_line(aes(x=time.no2,y=no2.fitted,color="Fitted")) + xlab("Time") + 
+  ylab("NO2")
+```
+
+Comparing the fitted and true data values shows that the model generally captures the movement of the data, even if the fitted values are not completely effective in capturing the full amplitude of the variations. The model tends to underestimate the true values on the increasing portions and not capture the top or bottom extremes of the data. It appears the model effectively captures seasonality within the data. We are generally satisfied with this model's performance. 
+
+## Part 2
+### 2A, 2B
+We will be using the models created above. The rationale and methodology leading to the creation and validation of these models is detailed prior.
+
+### 2C
+```{r}
+allResiduals <- data.frame(co.trendseason3$residuals, no2.trendseason$residuals)
+colnames(allResiduals) <- c("CO", "NO2")
+cor(allResiduals)
+```
+
+The residuals are fairly highly correlated with a correlation coefficient of 0.618, so we will model the 2 jointly.
+
+### 2C
+```{r, results='hide', warning=FALSE}
+
+
+AICmatrix2 <- matrix(NA, 5, 5) #expanded the search area since minimum was on the edge
+for(p in 1:5){
+  for(q in 0:4){
+      try(varma.model <- VARMACpp(allResiduals, p=p, q=q, include.mean=F))
+      AICmatrix2[p,q+1] <- varma.model$aic
+    
+  }
+}
+
+
+```
+
+### 2D, 2E
+```{r , results = 'hide'}
+#AICmatrix
+AICmatrix2
+varma.model14 <- VARMACpp(allResiduals, p=1, q=4, include.mean=F) #AIC of 7.017
+varma.model43 <- VARMACpp(allResiduals, p=4, q=3, include.mean=F) #AIC of 7.015
+```
+The VARMA(4,3) model has the lowest AIC of 7.015 in comparison to the VARMA(1,4) model's AIC of 7.017. 
+```{r, results = 'hide'}
+MTSdiag(varma.model14)
+```
+In the cross correlation function graphs, there are significant lags in each of the CCF plots. This leaves us to believe that there is a significant amount of unexplained correlation. The Ljung-box test shows the model is not adequate at any lags since the residuals are dependent. This leads us to believe that this model is inadequate so try the next best model by AIC. 
+
+```{r, results = 'hide'}
+MTSdiag(varma.model43)
+```
+
+The CCFs show very few to no significant lags and the Ljung-box tests shows that the model is adequate to a lag of at least 25. This is an improvement from the previous model and as such we will select this model.
+
+```{r}
+varmano2.fitted <- no2.trendseason$fitted.values + fitted(varma.model43)
+varmaco.fitted <- co.trendseason3$fitted.values + fitted(varma.model43)
+
+
+p1<-ggplot() + geom_line(aes(x=time.no2,y=no2.ts[1:length(time.no2)],color="True")) +
+  geom_line(aes(x=time.no2,y=no2.fitted,color="Fitted")) + xlab("Time") + 
+  ylab("NO2")
+
+p2<-ggplot() + geom_line(aes(x=time,y=co.ts[1:length(time)],color="True")) +
+  geom_line(aes(x=time,y=co.fitted,color="Fitted")) + xlab("Time") + 
+  ylab("CO")
+
+ggarrange(p1,p2,nrow = 2, ncol = 1)
+```
+
+## Part 3
+
+### 3A
+```{r, warning=FALSE}
+#univariate
+set.seed(15)
+e.co.sim <- arima.sim(n=365*1, list(ar=c(co.auto.model$coef[1],co.auto.model$coef[2])), 
+                      sd=sqrt(co.auto.model$sigma2))
+
+e.no2.sim <- arima.sim(n=364*1, 
+                       list(order = c(1,1,1),                                  
+                            ar=c(no2.auto.model$coef[1]),
+                            ma = no2.auto.model$coef[2]), sd=sqrt(no2.auto.model$sigma2))
+
+allSimulations <- data.frame(e.co.sim, e.no2.sim)
+colnames(allSimulations) <- c("CO","NO2")
+cor(allSimulations)
+
+p1<-ggplot() +
+  geom_line(aes(x=time[1:length(e.co.sim)],y=e.co.sim + 
+                  fitted(co.trendseason)[1:length(e.co.sim)]),color="blue") +
+  geom_line(aes(x=time[1:length(e.co.sim)],y=co.ts[1:length(e.co.sim)]),color="red")+
+  xlab("time")+
+  ylab("CO concentration")
+
+p2<-ggplot() +
+  geom_line(aes(x=time[1:length(e.no2.sim)],y=e.no2.sim + 
+                  fitted(no2.trendseason)[1:length(e.no2.sim)]),color="blue") +
+  geom_line(aes(x=time[1:length(e.no2.sim)],y=no2.ts[1:length(e.no2.sim)]),color="red")+
+  xlab("time")+
+  ylab("NO2 concentration")
+
+ggarrange(p1,p2,nrow = 2, ncol=1)
+
+#multivariate 43
+
+varma.sim = VARMAsim(365,phi=varma.model43$Phi,theta=varma.model43$Theta,
+                     sigma=varma.model43$Sigma)
+cor(varma.sim$series)
+cor(allResiduals)
+
+p3<-ggplot() + 
+  geom_line(aes(x=time[1:length(e.co.sim)],y=varma.sim$series[,1] + 
+                  fitted(co.trendseason)[1:length(e.co.sim)]),color="blue") +
+  geom_line(aes(x=time[1:length(e.no2.sim)],y=co.ts[1:length(e.no2.sim)]), color="red")+
+  xlab("time")+
+  ylab("CO concentration")
+  
+p4<-ggplot() + 
+  geom_line(aes(x=time[1:length(e.no2.sim)],y=varma.sim$series[,2] + 
+                  fitted(no2.trendseason)[1:length(e.no2.sim)]), color="blue") +
+  geom_line(aes(x=time[1:length(e.no2.sim)],y=no2.ts[1:length(e.no2.sim)]), color="red")+
+  xlab("time")+
+  ylab("NO2 concentration")
+
+ggarrange(p3,p4,nrow = 2,ncol = 1)
+```
+All simulations (in blue) appear to generally capture the same trends, seasonality, mean, and variance of the original time series (in red). 
+
+
+###3B
+```{r}
+#CO
+co.pg <- spec.pgram(co.ts,spans=9,demean=T,log='no')
+e.co.sim.pg <- spec.pgram(e.co.sim,spans=9,demean=T,log='no')
+varma.co.sim.pg <- spec.pgram(co.trendseason3$fitted+varma.sim$series[,1],
+                              spans=9,demean=T,log='no')
+
+#NO2
+no2.pg <- spec.pgram(no2.ts,spans=9,demean=T,log='no')
+e.no2.sim.pg <- spec.pgram(e.no2.sim,spans=9,demean=T,log='no')
+varma.no2.sim.pg <- spec.pgram(no2.trendseason$fitted+varma.sim$series[,2] 
+                               ,spans=9,demean=T,log='no')
+```
+The univatiate simulations for both CO and NO2 have similar periodograms to the original data. They both have the 'red noise' that is seen in the original data and later smaller peaks. However, the magnitude of the spectrum for the simulated values is much greater than that of the measured data. 
+
+The multivariate simulation for CO has a very similar periodogram to the original data. It captures the same large maxes in the spectrum that is seen in the real data.
+
+The periodogram for NO2 do not appear to match the original data at all despite the similar time series appearance. Note that the y-axis of the VARMA periodigrams are an order of magnitude smaller. The simulated periodogram has exaggerated peaks where seasonality was modeled.
+
+###3C
+```{r}
+
+e.co.sim.acf <- ggAcf(e.co.sim)
+e.no2.sim.acf <- ggAcf(e.no2.sim)
+
+e.co.sim.pacf <- ggPacf(e.co.sim)
+e.no2.sim.pacf <- ggPacf(e.no2.sim)
+
+varma.co.acf <- ggAcf(varma.sim$series[,1])
+varma.no2.acf <- ggAcf(varma.sim$series[,2])
+
+varma.co.pacf <- ggPacf(varma.sim$series[,1])
+varma.no2.pacf <- ggPacf(varma.sim$series[,2])
+
+ggarrange(co.acf, e.co.sim.acf, co.pacf, e.co.sim.pacf, nrow = 2, ncol = 2)
+ggarrange(co.acf, varma.co.acf, co.pacf, varma.co.pacf, nrow = 2, ncol = 2)
+ggarrange(no2.acf,e.no2.sim.acf, no2.pacf, e.no2.sim.pacf, nrow = 2, ncol = 2)
+ggarrange(no2.acf,varma.no2.acf, no2.pacf, varma.no2.pacf, nrow = 2, ncol = 2)
+
+```
+CO: The ACF and PACF for the original data is very similar to the ACF and PACF for the univariate simulation. Both ACFs have exponentially decreasing values that cut off after 3 in the original data and 6 in the simulated. Both PACFs cut off after lag 1. The autocorrelation of the simulated CO VARMA values does not appear to mirror that of the original data.
+
+NO2: The ACF and PACF for the original data is similar to the ACF and PACF for the univariate simulation. Both ACFs have and slight sinusoidally linear decreasing values. While original ACF cuts off after lag 11, the simulated does not cut off. Both PACFs cut off after around 2 or 3. The autocorrelation of the simulated NO2 VARMA values does not appear to mirror that of the original data.
+
+###3D
+```{r}
+
+cor(co.ts, no2.ts)
+cor(e.co.sim, e.no2.sim)
+cor(varma.sim$series[,1],varma.sim$series[,2])
+
+```
+The univarate simulations were not able to reproduce the cross correlation of the original data. The univariate cross correlation is 0.03 while the original data has a cross correlation of 0.607. The multivariate simulation were able to reproduce the cross correlation. The multivariate cross correlation is 0.65 which is close to the original cross correlation. This is expected because the univariate simulations are produced independently while the multivariate simulations produce each variables simultaneously.
+
+
+# Forecasting
+
+if you compare the performance of your univariate and multivariate
+models on a forecast of the last week of daily maximum carbon monoxide (CO) and nitrogen
+dioxide (NO2) concentrations in terms of MSE (3 points) and visually (2 points).
+
+```{r}
+
+
+# Prediction performance
+# Create test set from co data set with last week
+
+next.week.time <- c((nrow(dailyAQ)-6):nrow(dailyAQ))
+
+# The test data frame
+
+next.week.co <- co.model.data[(nrow(dailyAQ)-6):nrow(dailyAQ),]
+next.week.no2 <- no2.model.data[(nrow(dailyAQ)-6):nrow(dailyAQ),]
+# The actual time series for the test period
+
+
+next.week.co.ts <- ts(next.week.co$co)
+next.week.no2.ts <- ts(next.week.no2$no2)
+
+
+# Prediction for the next 6 months by temp.auto:
+
+E_Y.pred.uni.co <- predict(co.trendseason3, newdata=next.week.co)
+e_t.pred.uni.co <- forecast(co.auto.model, h=7)
+next.week.prediction.uni.co <- E_Y.pred.uni.co + e_t.pred.uni.co$mean
+
+E_Y.pred.uni.no2 <- predict(no2.trendseason, newdata=next.week.no2)
+e_t.pred.uni.no2 <- forecast(no2.auto.model, h=7)
+next.week.prediction.uni.no2 <- E_Y.pred.uni.no2 + e_t.pred.uni.no2$mean
+
+# MSE:
+
+mean((next.week.prediction.uni.co-next.week.co$co.ts)^2)
+mean((next.week.prediction.uni.no2-next.week.no2$no2.ts)^2)
+
+# with ggplot
+co.uni.predictions <- ggplot() + 
+  geom_line(aes(x=1:391,y=dailyAQ$CO.GT.),color="black") + 
+  geom_line(aes(x=next.week.time,y=next.week.prediction.uni.co),color="red") + 
+  geom_line(aes(x=next.week.time,y=E_Y.pred.uni.co + e_t.pred.uni.co$lower[,2]),
+            color="red",linetype="dashed") + 
+  geom_line(aes(x=next.week.time,y=E_Y.pred.uni.co + e_t.pred.uni.co$upper[,2]),
+            color="red",linetype="dashed") +
+  xlab("Time") + ylab("CO") + 
+  ggtitle("CO Time Series and Univariate 1 Week Forecast")
+
+no2.uni.predictions <- ggplot() + 
+  geom_line(aes(x=1:391,y=dailyAQ$NO2.GT.),color="black") + 
+  geom_line(aes(x=next.week.time,y=next.week.prediction.uni.no2),color="red") + 
+  geom_line(aes(x=next.week.time,y=E_Y.pred.uni.no2 + e_t.pred.uni.no2$lower[,2]),
+            color="red",linetype="dashed") + 
+  geom_line(aes(x=next.week.time,y=E_Y.pred.uni.no2 + e_t.pred.uni.no2$upper[,2]),
+            color="red",linetype="dashed") +
+  xlab("Time") + ylab("NO2") + 
+  ggtitle("NO2 Time Series and Univariate 1 Week Forecast")
+
+ggarrange(co.uni.predictions, no2.uni.predictions,nrow = 2,ncol = 1)
+```
+
+```{r}
+varma.fcst <- VARMApred(varma.model43, h=7)
+
+E_Y.pred.multi.co <- predict(co.trendseason3, newdata=next.week.co) 
+e_t.pred.multi.co <- varma.fcst$pred[,1]
+e_t.pred.multi.co.lower <- varma.fcst$pred[,1] - 1.96*varma.fcst$se.err[,1]
+e_t.pred.multi.co.upper <- varma.fcst$pred[,1] + 1.96*varma.fcst$se.err[,1]
+next.week.prediction.multi.co <- E_Y.pred.multi.co + e_t.pred.multi.co
+
+E_Y.pred.multi.no2 <- predict(no2.trendseason, newdata=next.week.no2) 
+e_t.pred.multi.no2 <- varma.fcst$pred[,2]
+e_t.pred.multi.no2.lower <- varma.fcst$pred[,2] - 1.96*varma.fcst$se.err[,2]
+e_t.pred.multi.no2.upper <- varma.fcst$pred[,2] + 1.96*varma.fcst$se.err[,2]
+next.week.prediction.multi.no2 <- E_Y.pred.multi.no2 + e_t.pred.multi.no2
+
+# MSE:
+
+mean((next.week.prediction.multi.co-next.week.co$co)^2)
+mean((next.week.prediction.multi.no2-next.week.no2$no2)^2)
+
+# Plot actual values and predicted values
+co.multi.predictions <- ggplot() + 
+  geom_line(aes(x=1:391,y=dailyAQ$CO.GT.),color="black") + 
+  geom_line(aes(x=next.week.time,y=next.week.prediction.multi.co),color="red") + 
+  geom_line(aes(x=next.week.time,y=E_Y.pred.multi.co + e_t.pred.multi.co.lower),
+            color="red",linetype="dashed") + 
+  geom_line(aes(x=next.week.time,y=E_Y.pred.multi.co + e_t.pred.multi.co.upper),
+            color="red",linetype="dashed") +
+  xlab("") + ylab("Richmond co") + 
+  ggtitle("co Trend and Seasonality Model + VARMA of Residuals")
+
+no2.multi.predictions <- ggplot() + 
+  geom_line(aes(x=1:391,y=dailyAQ$NO2.GT.),color="black") + 
+  geom_line(aes(x=next.week.time,y=next.week.prediction.multi.no2),color="red") + 
+  geom_line(aes(x=next.week.time,y=E_Y.pred.multi.no2 + e_t.pred.multi.no2.lower),
+            color="red",linetype="dashed") + 
+  geom_line(aes(x=next.week.time,y=E_Y.pred.multi.no2 + e_t.pred.multi.no2.upper),
+            color="red",linetype="dashed") +
+  xlab("") + ylab("Richmond co") + 
+  ggtitle("no2 Trend and Seasonality Model + VARMA of Residuals")
+
+ggarrange(co.multi.predictions,no2.multi.predictions,nrow=2,ncol=1)
+
+```
+Assessing the one week forecasts using mean square error, the multivariate VARMA model performed better for predicting CO and NO2 with a MSE of 3.06 and 712.21 respectively compared to the MSE of the univariate models which had MSEs of 3.36 for CO and 897.91 for NO2.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
