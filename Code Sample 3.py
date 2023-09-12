@@ -14,8 +14,8 @@ import pandas as pd
 import numpy as np
 
 # API keys for open weather and google maps
-weather_api_key = '6ac7e9d162be223dd33458ed99af5dd9'
-geocoding_api_key = 'AIzaSyBv8MCAQihp-AhlbEyFPk4ZAVJi_8jON9Y'
+weather_api_key = #API key here
+geocoding_api_key = #API key here
 
 # Base URL for open weather
 base_url = 'https://api.openweathermap.org/data/2.5/forecast?units=imperial&'
